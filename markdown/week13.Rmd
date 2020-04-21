@@ -26,19 +26,22 @@ library(psych)
 
 # Data Import and Cleaning
 
-1. Obtained data from Twitter API
+1. Obtained data from Twitter API, removed retweets
 2. Built a tibble included only tweet text, likes, and retweets
 3. Turned the dataset into a corpus
 4. Removed RT headers, @ tags, hashtags, and links
 5. Cleaned text as described in more detail below
+6. Converted to a unigram/bigram DTM
+7. Remove sparse terms
+8. Tokenize and remove documents for which no tokens were retained
 
 ```{r}
 # Obtain access to the Twitter API using appropriate authentication
 
-#api <- '7DPTSeLp9wqmBaoayNYpPJvLp'
-#apiSecret <- 'ftzB0U2ulWaYs32tNHn9lERkhbVUtbuAiP6o8Lec5XV7lNU7GM'
-#access <- '1012248144-7qLC5cfX6BVKS1a4lpnIHRndLSPOxiUA62RnEOw'
-#accessSecret <- 'Qbh5TneWdrQhEkmlDvzOGFKmHzkZVm1KcDzb0kOK13eBP'
+#api <- 'apikeyhere'
+#apiSecret <- 'apisecrethere'
+#access <- 'accesskeyhere'
+#accessSecret <- 'accesssecrethere'
 #setup_twitter_oauth(api, apiSecret, access, accessSecret) 
 
 # Query Twitter API using a function from the twitteR library to obtain a table 
@@ -59,10 +62,12 @@ library(psych)
 # Create output table
 #write.csv(imported_tbl,"output/tweets_original.csv", row.names = F)
 
-# Corpus of preprocessed lemmas
-
+# Import the original tweets 
 imported_tbl <- read.csv("output/tweets_original.csv")
+```
 
+```{r}
+# Create a corpus
 twitter_cp <- VCorpus(VectorSource(imported_tbl$text))
 
 # Function to get rid of various regex patterns in the tweets
@@ -81,7 +86,7 @@ twitter_cp <- tm_map(twitter_cp, f,"RT @[a-z,A-Z,0-9]{8}")
 twitter_cp <- tm_map(twitter_cp, f,"@[a-z,A-Z,0-9]*")
 
 # Replace abbreviations, contractions, put in lowercase, remove numbers and
-# punctuations, remove stop words, and strip white space
+# punctuation, remove stop words (english and spanish), and strip white space
 twitter_cp <- tm_map(twitter_cp, content_transformer(replace_abbreviation))
 twitter_cp <- tm_map(twitter_cp, content_transformer(replace_contraction))
 twitter_cp <- tm_map(twitter_cp, content_transformer(str_to_lower))
@@ -94,7 +99,9 @@ twitter_cp <- tm_map(twitter_cp, stripWhitespace)
 
 # Lemmatize words
 twitter_cp <- lemmatize_words(twitter_cp)
+```
 
+```{r}
 # Convert to unigram and bigram DTM
 tokenizer <- function(x)
     {NGramTokenizer(x, Weka_control(min = 1, max = 2))}
@@ -124,13 +131,16 @@ dropped_tbl <- imported_tbl[tokenCounts > 0,]
 ```{r}
 # Tibble with tokens from the DTM
 twitter_tbl <- as_tibble(twitter_dtm_m)
+# Remove search terms 
 twitter_tbl <- select(twitter_tbl, -c("game thrones", "game", "thrones"))
+# Create a word cloud
 wordCounts <- colSums(twitter_tbl)
 wordNames <- names(twitter_tbl)
 wordcloud(wordNames, wordCounts, max.words=50, color = "springgreen4")
 ```
 
 ```{r}
+# Most common lemmas
 tibble(wordNames, wordCounts) %>%
     arrange(desc(wordCounts)) %>%
     top_n(20) %>%
@@ -142,6 +152,7 @@ tibble(wordNames, wordCounts) %>%
 # Topic Modeling
 
 ```{r}
+# Create plots to examine various metrics to choose number of topics
 tuning <- FindTopicsNumber(twitter_dtm,
                            topics = seq(2,15,1),
                            metrics = c("Griffiths2004",
@@ -154,21 +165,24 @@ FindTopicsNumber_plot(tuning)
 ```
 
 ```{r}
+# Run the LDA with 4 as the chosen number of topics
 lda_results <- LDA(twitter_dtm, 4)
 lda_betas <- tidy(lda_results, matrix="beta")
 lda_gammas <- tidy(lda_results, matrix="gamma")
 ```
 
 ```{r}
-# Examine terms most associated with each of the 5 topics in a table
+# Examine terms most associated with each of the 4 topics in a table
 top_terms <- lda_betas %>%
   group_by(topic) %>%
   top_n(10, beta) %>%
   ungroup() %>%
   arrange(topic, -beta)
 top_terms
+```
 
-# Examine terms most associated with each of the 5 topics in a graph
+```{r}
+# Examine terms most associated with each of the 4 topics in a graph
 top_terms %>%
   mutate(term = reorder_within(term, beta, topic)) %>%
   ggplot(aes(term, beta, fill = factor(topic))) +
@@ -180,14 +194,16 @@ top_terms %>%
 
 Interpretation of topics: 
 
-1. Includes one, can, time, but also last - I'm thinking this one has to do with 
-people either going back and rewatching the series from season one, or beginning 
-the show, possibly as a result of the shut-down leading to more free time
+1. This is a lot of words surrounding Jon Snow, such as "king", "night", "last",
+and "stark"
 
-2. This one is tough - maybe just tweets about content from people watching
+2. This might be people reflecting on watching the series ("remember", "good", 
+"one", "like")
 
-3. This one has "jon", "king", and also "remember" - I'm thinking hopefuls who
-think Jon will end up on the throne
+3. This could be people watching for the first time - "one", "just", "can" 
+(potentially people finally have time to watch, given the shut down)
+
+4. This one seems pertty similar to 3
 
 
 ```{r}
@@ -198,6 +214,7 @@ topic_col <- lda_gammas %>%
     ungroup %>%
     mutate(document = as.numeric(document)) %>%
     arrange(document)
+
 # tabular summary of most likely topic per tweet
 topic_col
 
@@ -219,7 +236,6 @@ twitter_tbl <- bind_cols(twitter_tbl, dropped_tbl) %>%
 ```
 
 ```{r}
-
 # Create index, control train, and preprocess for the models
 index <- createFolds(twitter_tbl$tweetPop, k = 10, returnTrain = T)
 my_control_train <- trainControl(method = "cv", number = 10, index = index, verboseIter = T)
@@ -235,13 +251,17 @@ twitter_tbl <- twitter_tbl %>%
 ```
 
 ```{r}
-
+# Parallelize
 local_cluster <- makeCluster(detectCores()-1)
 registerDoParallel(local_cluster)
+```
 
+```{r}
+# Subset the dataset so my first model does not include topic
 mod1_tbl <- twitter_tbl %>%
     select(-c(topic1, topic2, topic3))
 
+# Train first model (without topic)
 twitter_mod_notopic <- train(
   tweetPop ~ ., 
   mod1_tbl,
@@ -251,7 +271,10 @@ twitter_mod_notopic <- train(
   trControl = my_control_train,
   tuneLength = 8
 )
+```
 
+```{r}
+# Train second model (with topic)
 twitter_mod_topic <- train(
   tweetPop ~ ., 
   twitter_tbl,
@@ -267,9 +290,10 @@ registerDoSEQ()
 ```
 
 ```{r}
+# Compare models textually
 summary(resamples(list("no topics" = twitter_mod_notopic, "topics" = twitter_mod_topic)))
 
-
+# Compare models graphically
 dotplot(resamples(list("no topics" = twitter_mod_notopic, "topics" = twitter_mod_topic)))
 dotplot(resamples(list("no topics" = twitter_mod_notopic, "topics" = twitter_mod_topic)), metric = "Rsquared")
 dotplot(resamples(list("no topics" = twitter_mod_notopic, "topics" = twitter_mod_topic)), metric = "RMSE")
@@ -278,10 +302,12 @@ dotplot(resamples(list("no topics" = twitter_mod_notopic, "topics" = twitter_mod
 
 # Final Interpretation
 
-Given all the NLP you’ve done and analyses you’ve conducted, would you conclude that topics (and
-emotion) are important in predicting the popularity of tweets? Why or why not? Cite specific
-evidence from your earlier work on this project and also consider the research design and the
-impact of how topic modeling works carefully
-
+From the models fit above, it does appear that adding in the topics improves
+the explanatory power of this model. The Rsquared for predicting tweet 
+popularity is higher for the model that includes the topics than the model that 
+does not. It is difficult to tell whether emotion, specifically, plays a role 
+in this without conducting a sentiment analysis. I also would not feel 
+comfortable concluding that topic affects tweet popularity across domains, given 
+only this one sample of tweets. 
 
 
